@@ -20,6 +20,9 @@ using System.Text;
 
 namespace sar.Tools
 {
+    /// <summary>
+    /// Enum representing all the different types of objects codes returned by MSSQL
+    /// </summary>
 	public enum SqlObjectType
 	{
 		FN,	// SQL scalar function
@@ -32,13 +35,32 @@ namespace sar.Tools
 		V	// View
 	}
 	
+    /// <summary>
+    /// This class can be used to list  and managed MSSQL (Microsoft SQL Server) objects. 
+    /// This module offers the ability to easily create table create as well as table insert scripts. 
+    /// 
+    /// This module's intended use is for services to be able easily install, create and manage there own embedded SQL procedures
+    /// and insert scripts.
+    /// </summary>
 	public class DatabaseObject
 	{
+        /// <summary>
+        /// Sql Command timeout in seconds. This is equivalent to 10 mins.
+        /// </summary>
+        private const int COMMAND_TIMEOUT = 600;
+
 		#region static
 		
+        /// <summary>
+        /// Gets all the objects in a given database. Note that the SQL script this method is running is embedded within the project.
+        /// </summary>
+        /// <param name="connection">Database connection</param>
+        /// <returns>List of Database Objects</returns>
 		public static List<DatabaseObject> GetDatabaseObjects(SqlConnection connection)
 		{
 			var result = new List<DatabaseObject>();
+
+            // Get the SQL from the embedded file in the project.
 			var sql = Encoding.ASCII.GetString(EmbeddedResource.Get(@"sar.Databases.MSSQL.GetObjects.sql"));
 			using (var command = new SqlCommand(sql, connection))
 			{
@@ -49,6 +71,8 @@ namespace sar.Tools
 					while (reader.Read())
 					{
 						string name = reader.GetString(0);
+
+                        // convert the database string to an enum
 						var type = (SqlObjectType)Enum.Parse(typeof(SqlObjectType), reader.GetString(1));
 
 						result.Add(new DatabaseObject(name, type));
@@ -59,18 +83,25 @@ namespace sar.Tools
 			return result;
 		}
 		
+        /// <summary>
+        /// Returns a database object given its name. If the object is not found in the particular database, null is returned
+        /// </summary>
+        /// <param name="connection">Database connection</param>
+        /// <param name="name">Name of the desired database object</param>
+        /// <returns>DatabaseObject</returns>
 		public static DatabaseObject GetDatabaseObject(SqlConnection connection, string name)
 		{
 			var result = new List<DatabaseObject>();
 			
 			using (var command = new SqlCommand(@"SELECT name, xtype FROM sysobjects WHERE name = " + name.QuoteSingle(), connection))
 			{
-				command.CommandTimeout = 600;	// 10 minutes
+                command.CommandTimeout = COMMAND_TIMEOUT;
 				
 				using (var reader = command.ExecuteReader())
 				{
 					if (reader.Read())
 					{
+                        // convert the database string to an enum
 						var type = (SqlObjectType)Enum.Parse(typeof(SqlObjectType), reader.GetString(1));
 						return new DatabaseObject(reader.GetString(0), type);
 					}
@@ -83,13 +114,19 @@ namespace sar.Tools
 			}
 		}
 		
+        /// <summary>
+        /// Returns all the columns in a given SQL table.
+        /// </summary>
+        /// <param name="connection">Datavase Connection</param>
+        /// <param name="table">Name of table</param>
+        /// <returns>List of column names</returns>
 		public static List<string> GetColumnNames(SqlConnection connection, string table)
 		{
 			var result = new List<string>();
 			
 			using (var command = new SqlCommand(@"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = N" + table.QuoteSingle(), connection))
 			{
-				command.CommandTimeout = 600;	// 10 minutes
+                command.CommandTimeout = COMMAND_TIMEOUT;
 				
 				using (var reader = command.ExecuteReader())
 				{
@@ -119,6 +156,9 @@ namespace sar.Tools
 			get { return this.name; }
 		}
 		
+        /// <summary>
+        /// Return a readable name of the SQL object based of type code
+        /// </summary>
 		public string Type
 		{
 			get
@@ -165,6 +205,12 @@ namespace sar.Tools
 			this.type = type;
 		}
 		
+        /// <summary>
+        /// Builds a create table script which has the ability to either create (non-existant) table or alter an
+        /// existing table to added the missing information.
+        /// </summary>
+        /// <param name="connection">Database Connection</param>
+        /// <returns>Generate create script</returns>
 		public string GetCreateScript(SqlConnection connection)
 		{
 			string result = "";
@@ -172,12 +218,13 @@ namespace sar.Tools
 			switch (this.type)
 			{
 				case SqlObjectType.TT:
+                    // get the embedded sql code
 					var createTableTypeScript = Encoding.ASCII.GetString(EmbeddedResource.Get(@"sar.Databases.MSSQL.CreateTableType.sql"));
 					createTableTypeScript = createTableTypeScript.Replace(@"%%TableTypeName%%", this.name);
 					
 					using (var command = new SqlCommand(createTableTypeScript, connection))
 					{
-						command.CommandTimeout = 600;	// 10 minutes
+                        command.CommandTimeout = COMMAND_TIMEOUT;
 						
 						using (var reader = command.ExecuteReader())
 						{
@@ -191,13 +238,14 @@ namespace sar.Tools
 					return result.TrimWhiteSpace();
 					
 				case SqlObjectType.U:
+                    // get the embedded sql code
 					var createTableScript = EmbeddedResource.Get(@"sar.Databases.MSSQL.CreateTable.sql");
 					var script = Encoding.ASCII.GetString(createTableScript);
 					script = script.Replace(@"%%TableName%%", this.name);
 					
 					using (var command = new SqlCommand(script, connection))
 					{
-						command.CommandTimeout = 600;	// 10 minutes
+						command.CommandTimeout = COMMAND_TIMEOUT;
 						
 						using (var reader = command.ExecuteReader())
 						{
@@ -211,9 +259,13 @@ namespace sar.Tools
 					return result.TrimWhiteSpace();
 
 				default:
+
+                    // if the type of the object is not a user defined table or a table type then use 
+                    // sq_helptext to return the definition of the object
+                    // msdn: https://msdn.microsoft.com/en-us/library/ms176112.aspx
 					using (var command = new SqlCommand("sp_helptext " + this.name.QuoteSingle(), connection))
 					{
-						command.CommandTimeout = 600;	// 10 minutes
+						command.CommandTimeout = COMMAND_TIMEOUT;
 						
 						using (var reader = command.ExecuteReader())
 						{
@@ -228,6 +280,12 @@ namespace sar.Tools
 			}
 		}
 		
+        /// <summary>
+        /// Create a SQL script of insert statements which replicates the data of a table object or table type.
+        /// The purpose is to regenerate data or populate data automated way
+        /// </summary>
+        /// <param name="connection">Database Object</param>
+        /// <returns>Generate insert script</returns>
 		public string GetInsertScript(SqlConnection connection)
 		{
 			string result = "";
@@ -241,22 +299,26 @@ namespace sar.Tools
 					{
 						using (var command = new SqlCommand(sql, connection))
 						{
-							command.CommandTimeout = 600;	// 10 minutes
+                            command.CommandTimeout = COMMAND_TIMEOUT;
 							command.ExecuteNonQuery();
 						}
 					}
 					
+                    // set the script parameters
+                    // @PrintGeneratedCode = 0      => Use PRINT command instead or SELECT
+                    // @GenerateProjectInfo = 0     => Don't add the project comments
 					var script = "";
 					script += "EXECUTE ";
 					script += " dbo.GenerateInsert @ObjectName = N'" + this.name + "'";
 					script += " ,@PrintGeneratedCode=0";
 					script += " ,@GenerateProjectInfo=0";
+
 					
 					result = @"IF NOT EXISTS (SELECT TOP 1 * FROM [" + this.name + "])" + Environment.NewLine;
 					
 					using (var command = new SqlCommand(script, connection))
 					{
-						command.CommandTimeout = 600;	// 10 minutes
+                        command.CommandTimeout = COMMAND_TIMEOUT;
 						
 						using (var reader = command.ExecuteReader())
 						{
@@ -267,10 +329,10 @@ namespace sar.Tools
 						}
 					}
 					
-					// drop sproc
+					// Drop the stored procedure the database
 					using (var command = new SqlCommand(@"DROP PROCEDURE dbo.GenerateInsert;", connection))
 					{
-						command.CommandTimeout = 600;	// 10 minutes
+						command.CommandTimeout = COMMAND_TIMEOUT;
 						command.ExecuteNonQuery();
 					}
 					
